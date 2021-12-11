@@ -1,0 +1,17 @@
+{
+  "name": "api.mare.biz",
+  "version": "1.0.0",
+  "description": "API for Mare Bits",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.mjs",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Twifag",
+  "license": "SEE LICENSE IN https://donutsteel.pl",
+  "dependencies": {
+    "@alch/alchemy-web3": "^1.1.9",
+    "@unstoppabledomains/resolution": "^7.0.0",
+    "marebits-locker": "github:marebits/marebits-locker"
+  }
+}
