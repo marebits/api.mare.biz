@@ -14,5 +14,6 @@
     "@alch/alchemy-web3": "^1.1.9",
     "@unstoppabledomains/resolution": "^7.0.0",
     "marebits-locker": "github:marebits/marebits-locker"
-  }
+  }, 
+  "type": "module"
 }

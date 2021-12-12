@@ -4,21 +4,23 @@ import { Address } from "./lib/Address.mjs";
 import { Addresses } from "./lib/Addresses.mjs";
 import { APIError } from "./lib/APIError.mjs";
 import { APIResponse } from "./lib/APIResponse.mjs";
+import { Cache } from "./lib/Cache.mjs";
 import { createAlchemyWeb3 } from "@alch/alchemy-web3";
+import { createHash } from "crypto";
 import http from "http";
 import { readFileSync } from "fs";
 
 const Secrets = globalThis.JSON.parse(readFileSync("./secrets.json"));
 
 class MareBitsAPI extends APIResponse {
-	static MARE_BITS_CONTRACT_ADDRESS = { ETHEREUM: "0xc5a1973e1f736e2ad991573f3649f4f4a44c3028", POLYGON: "0xb362a97ad06c907c4b575d3503fb9dc474498480" };
-	static MAX_SIMULTANEOUS_REQUESTS = 6;
-	static SERVER_URI = "https://api.mare.biz";
-	static ZERO_ADDRESS = "0x0000000000000000000000000000000000000000000000000000000000000000";
+	static #MARE_BITS_CONTRACT_ADDRESS = { ETHEREUM: "0xc5a1973e1f736e2ad991573f3649f4f4a44c3028", POLYGON: "0xb362a97ad06c907c4b575d3503fb9dc474498480" };
+	static #MAX_SIMULTANEOUS_REQUESTS = 6;
+	static #SERVER_URI = "https://api.mare.biz";
 
+	static #cache = new Cache();
 	static #server;
 
-	static get web3() { return { ethereum: createAlchemyWeb3(Secrets.ALCHEMY_API_KEY_ETHEREUM), polygon: createAlchemyWeb3(Secrets.ALCHEMY_API_KEY_POLYGON) }; }
+	static #getWeb3() { return { ethereum: createAlchemyWeb3(Secrets.ALCHEMY_API_KEY_ETHEREUM), polygon: createAlchemyWeb3(Secrets.ALCHEMY_API_KEY_POLYGON) }; }
 
 	static listener(request, response) { return new this(request, response); }
 	static startListening() {
@@ -36,11 +38,20 @@ class MareBitsAPI extends APIResponse {
 	constructor(request, response) {
 		super();
 		[this.#request, this.#response] = [request, response];
-		this.#requestUrl = new globalThis.URL(this.#request.url, this.constructor.SERVER_URI);
+		this.#requestUrl = new globalThis.URL(this.#request.url, this.constructor.#SERVER_URI);
 		let endpoint;
 
-		if (this.#request.method === "GET") {
-			this.#web3 = this.constructor.web3;
+		if (this.#isCached)
+			endpoint = async () => this.#status = this.#cachedResponse.status;
+		else if (this.#request.method === "OPTIONS") {
+			switch (this.#requestUrl.pathname) {
+				case "*":
+				case "/balanceOf":
+					this.#response.setHeader("Allow", "GET, HEAD, OPTIONS"); break;
+			}
+			endpoint = async () => this.#status = 204;
+		} else if (this.#request.method === "GET" || this.#request.method === "HEAD") {
+			this.#web3 = this.constructor.#getWeb3();
 
 			switch (this.#requestUrl.pathname) {
 				case "/balanceOf": endpoint = this.#balanceOf; break;
@@ -61,6 +72,17 @@ class MareBitsAPI extends APIResponse {
 			.catch(console.error);
 	}
 
+	get [globalThis.Symbol.toStringTag]() { return "MareBitsAPI"; }
+	get #cachedResponse() { return this.constructor.#cache.get(this.#cacheKey); }
+	get #cacheKey() { return globalThis.JSON.stringify({ method: this.#request.method, url: this.#requestUrl.toString() }); }
+	get #isCached() { return typeof(this.#cachedResponse) !== "undefined"; }
+	get #message() { return this.#isCached ? this.#cachedResponse.message : globalThis.JSON.stringify(this); }
+	get #messageHash() {
+		const hash = createHash("sha256");
+		hash.update(this.#message);
+		return hash.digest().toString("base64");
+	}
+
 	async #balanceOf() {
 		const addresses = await this.#getAddresses();
 
@@ -79,11 +101,11 @@ class MareBitsAPI extends APIResponse {
 			if (typeof(address.meta.error) !== "undefined")
 				return this.addError(new APIError({ detail: `Address \`${address.id}\` is not a valid address.`, title: "Invalid Address" }));
 
-			if (j >= this.constructor.MAX_SIMULTANEOUS_REQUESTS)
+			if (j >= this.constructor.#MAX_SIMULTANEOUS_REQUESTS)
 				return this.addError(new APIError({ detail: `Too many simultaneous requests, unable to get balance for address \`${address}\`.`, title: "Too Many Simultaneous Requests" }));
-			dataArrayPromise.ethereum[i] = promiseToGetBalance(this.#web3.ethereum.alchemy.getTokenBalances.bind(undefined, address.id, [this.constructor.MARE_BITS_CONTRACT_ADDRESS.ETHEREUM]))
+			dataArrayPromise.ethereum[i] = promiseToGetBalance(this.#web3.ethereum.alchemy.getTokenBalances.bind(undefined, address.id, [this.constructor.#MARE_BITS_CONTRACT_ADDRESS.ETHEREUM]))
 				.catch(this.#errorHandler.bind(this));
-			dataArrayPromise.polygon[i] = promiseToGetBalance(this.#web3.polygon.alchemy.getTokenBalances.bind(undefined, address.id, [this.constructor.MARE_BITS_CONTRACT_ADDRESS.POLYGON]))
+			dataArrayPromise.polygon[i] = promiseToGetBalance(this.#web3.polygon.alchemy.getTokenBalances.bind(undefined, address.id, [this.constructor.#MARE_BITS_CONTRACT_ADDRESS.POLYGON]))
 				.catch(this.#errorHandler.bind(this));
 			j++;
 		});
@@ -109,15 +131,26 @@ class MareBitsAPI extends APIResponse {
 	}
 	#end() {
 		this.#writeHead();
-		this.#write(this);
+
+		if (this.#request.method === "GET")
+			this.#response.write(this.#message);
 		this.#response.end();
+
+		if (!this.#isCached)
+			this.constructor.#cache.set(this.#cacheKey, { message: this.#message, status: this.#status });
 	}
 	#getAddresses() { return (new Addresses(this.#requestUrl.searchParams.getAll("address"))).normalize(this.#web3.ethereum); }
-	#write(message) { this.#response.write(globalThis.JSON.stringify(message)); }
 	#writeHead() {
 		if (this.#isHeadWritten)
 			return;
-		this.#response.writeHead(this.#status, { "Content-Type": "application/json", "X-Best-Pony": "Twilight Sparkle" });
+		this.#response.writeHead(this.#status, {
+			"Access-Control-Allow-Origin": "*", 
+			"Content-Length": (new globalThis.TextEncoder().encode(this.#message)).length,
+			"Content-Type": "application/json", 
+			ETag: this.#messageHash, 
+			Server: "api.mare.biz/1.0.0", 
+			"X-Best-Pony": "Twilight Sparkle"
+		});
 		this.#isHeadWritten = true;
 	}
 }
