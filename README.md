@@ -27,11 +27,13 @@ Some quick definitions that will make the rest of this document easier to unders
 
 All returned objects correspond loosely to the JSON:API specification.  Each one will have an `id` and a `type`.  They may optionally have a `data` or `errors` object.  The `data` object contains one or more `address` objects and the `errors` is an array of errors (if any).
 
-### Address
+### Objects
+
+#### Address
 
 Addresses represent a wallet or contract on the Ethereum or Polygon network.
 
-#### `/balanceOf?address=<address>`
+##### `/balanceOf?address=<address>`
 
 If a valid address is input, the `data` object will contain a representation of the `address` object.  If more than one result is found, `data` will be an array of `address` objects.
 
@@ -40,3 +42,24 @@ When a valid address is input, the `id` field will be a 42 character hexadecimal
 The `meta.input` field will be populated with the original address(es) as entered if it was resolved or modified during checksum.  The `meta.error` field may be populated with an `Invalid Address` error if the address is invalid.
 
 For valid addresses, the `attributes.balances` object will contain one entry each for the `ethereum` and `polygon` chains along with a `total`.  These are the address's $MARE balances represented as a string.
+
+#### MareBits
+
+This object represents the [Mare Bits](https://mare.biz/) token contract, on both the Ethereum and Polygon chains.  Its `id` will always be `ethereum:contract.marebits.eth` (the most human readable URI).
+
+##### `/circulatingSupply`
+
+Returns the total circulating supply on both the Ethereum and Polygon chains.  This is defined as the supply currently in possession of the general public and the market, which is equivalent to the total number of tokens minted excluding those tokens burned, locked, or in the possession of the developer or project itself.
+
+```
+circulatingSupply = totalTokens - tokensBurned - tokensLocked - tokensOwnedByDeveloper - tokensOwnedByProject
+```
+
+
+##### `/totalSupply`
+
+Returns the total supply of tokens on both the Ethereum and Polygon chains.  This is defined as the total number of tokens in existence, which is equivalent to the total number of tokens minted excluding those tokens burned.
+
+```
+totalSupply = totalTokens - tokensBurned
+```

@@ -9,7 +9,7 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "Twifag",
-  "license": "SEE LICENSE IN https://donutsteel.pl",
+  "license": "SEE LICENSE IN LICENSE.TXT",
   "dependencies": {
     "@alch/alchemy-web3": "^1.1.9",
     "@unstoppabledomains/resolution": "^7.0.0",

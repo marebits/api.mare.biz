@@ -54,6 +54,7 @@ class MareBitsAPI extends APIResponse {
 			switch (this.#requestUrl.pathname) {
 				case "*":
 				case "/balanceOf":
+				case "/circulatingSupply":
 				case "/totalSupply":
 					this.#response.setHeader("Allow", "GET, HEAD, OPTIONS"); break;
 			}
@@ -63,6 +64,7 @@ class MareBitsAPI extends APIResponse {
 
 			switch (this.#requestUrl.pathname) {
 				case "/balanceOf": endpoint = this.#balanceOf; break;
+				case "/circulatingSupply": endpoint = this.#circulatingSupply; break;
 				case "/totalSupply": endpoint = this.#totalSupply; break;
 				default: 
 					endpoint = async () => {
@@ -127,6 +129,18 @@ class MareBitsAPI extends APIResponse {
 			this.addData(address);
 		});
 	}
+	async #circulatingSupply() {
+		const { fromWei, mareBits, toBN } = await this.#totalSupply();
+		const nums = await globalThis.Promise.all([
+			mareBits.ethereum.balanceOf(this.constructor.#MARE_BITS_DEPLOYER_ADDRESS), 
+			mareBits.polygon.balanceOf(this.constructor.#MARE_BITS_DEPLOYER_ADDRESS), 
+			mareBits.ethereum.balanceOf(this.constructor.#MARE_BITS_OWNER_ADDRESS), 
+			mareBits.polygon.balanceOf(this.constructor.#MARE_BITS_OWNER_ADDRESS), 
+			// mareBits.ethereum.balanceOf(this.constructor.#MARE_BITS_VAULT_ADDRESS.ETHEREUM), 
+			mareBits.polygon.balanceOf(this.constructor.#MARE_BITS_VAULT_ADDRESS.POLYGON)
+		]);
+		this.data.attributes.circulatingSupply = fromWei(nums.reduce((result, num) => result.sub(toBN(num)), toBN(this.#web3.ethereum.utils.toWei(this.data.attributes.totalSupply))));
+	}
 	#errorHandler(err) {
 		if (err instanceof globalThis.Error)
 			this.addError(new APIError({ detail: err.message, title: err.name }));
@@ -150,20 +164,12 @@ class MareBitsAPI extends APIResponse {
 			ethereum: new MareBits(this.constructor.#MARE_BITS_CONTRACT_ADDRESS.ETHEREUM, this.#web3.ethereum),
 			polygon: new MareBits(this.constructor.#MARE_BITS_CONTRACT_ADDRESS.POLYGON, this.#web3.polygon)
 		};
-		const nums = await globalThis.Promise.all([
-			mareBits.ethereum.totalSupply(), 
-			mareBits.ethereum.balanceOf(this.constructor.#MARE_BITS_DEPLOYER_ADDRESS), 
-			mareBits.polygon.balanceOf(this.constructor.#MARE_BITS_DEPLOYER_ADDRESS), 
-			mareBits.ethereum.balanceOf(this.constructor.#MARE_BITS_OWNER_ADDRESS), 
-			mareBits.polygon.balanceOf(this.constructor.#MARE_BITS_OWNER_ADDRESS), 
-			// mareBits.ethereum.balanceOf(this.constructor.#MARE_BITS_VAULT_ADDRESS.ETHEREUM), 
-			mareBits.polygon.balanceOf(this.constructor.#MARE_BITS_VAULT_ADDRESS.POLYGON), 
-			mareBits.ethereum.balanceOf("0x0000000000000000000000000000000000000001")
-		]);
 		const { fromWei, toBN } = this.#web3.ethereum.utils;
+		const nums = await globalThis.Promise.all([mareBits.ethereum.totalSupply(), mareBits.ethereum.balanceOf("0x0000000000000000000000000000000000000001")]);
 		const response = new APIResource({ id: "ethereum:contract.marebits.eth", attributes: {}, type: "MareBits" });
-		response.attributes.totalSupply = fromWei(nums.slice(1).reduce((result, num) => result.sub(toBN(num)), toBN(nums[0])));
+		response.attributes.totalSupply = fromWei(toBN(nums[0]).sub(toBN(nums[1])));
 		this.addData(response);
+		return { fromWei, mareBits, toBN };
 	}
 	#writeHead() {
 		if (this.#isHeadWritten)
