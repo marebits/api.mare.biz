@@ -3,24 +3,31 @@
 import { Address } from "./lib/Address.mjs";
 import { Addresses } from "./lib/Addresses.mjs";
 import { APIError } from "./lib/APIError.mjs";
+import { APIResource } from "./lib/APIResource.mjs";
 import { APIResponse } from "./lib/APIResponse.mjs";
 import { Cache } from "./lib/Cache.mjs";
 import { createAlchemyWeb3 } from "@alch/alchemy-web3";
 import { createHash } from "crypto";
 import http from "http";
+import { MareBits } from "./lib/MareBits.mjs";
 import { readFileSync } from "fs";
 
 const Secrets = globalThis.JSON.parse(readFileSync("./secrets.json"));
 
 class MareBitsAPI extends APIResponse {
-	static #MARE_BITS_CONTRACT_ADDRESS = { ETHEREUM: "0xc5a1973e1f736e2ad991573f3649f4f4a44c3028", POLYGON: "0xb362a97ad06c907c4b575d3503fb9dc474498480" };
+	static #CHAIN_IDS = { ETHEREUM: 1, POLYGON: 137 };
+	static #CHAINS = { ETHEREUM: 1n << globalThis.BigInt(this.#CHAIN_IDS.ETHEREUM), POLYGON: 1n << globalThis.BigInt(this.#CHAIN_IDS.POLYGON) }
+	static #MARE_BITS_DEPLOYER_ADDRESS = "0x00Ad9AEb02CC7892c94DBd9E9BE93Ec5cf644632";
+	static #MARE_BITS_CONTRACT_ADDRESS = { ETHEREUM: "0xc5a1973E1f736e2aD991573f3649F4F4a44c3028", POLYGON: "0xb362A97aD06C907c4b575D3503fB9DC474498480" };
+	static #MARE_BITS_VAULT_ADDRESS = { ETHEREUM: "", POLYGON: "0x3d41144B7236Fb2119c52546D6F5Df15C0c316a8" };
+	static #MARE_BITS_OWNER_ADDRESS = "0x341256c1D56657B0c5A12E4157078251A32d7b75";
 	static #MAX_SIMULTANEOUS_REQUESTS = 6;
 	static #SERVER_URI = "https://api.mare.biz";
 
 	static #cache = new Cache();
 	static #server;
 
-	static #getWeb3() { return { ethereum: createAlchemyWeb3(Secrets.ALCHEMY_API_KEY_ETHEREUM), polygon: createAlchemyWeb3(Secrets.ALCHEMY_API_KEY_POLYGON) }; }
+	static #getWeb3() { return { ethereum: createAlchemyWeb3(Secrets.ALCHEMY_API_KEY.ETHEREUM), polygon: createAlchemyWeb3(Secrets.ALCHEMY_API_KEY.POLYGON) }; }
 
 	static listener(request, response) { return new this(request, response); }
 	static startListening() {
@@ -47,6 +54,7 @@ class MareBitsAPI extends APIResponse {
 			switch (this.#requestUrl.pathname) {
 				case "*":
 				case "/balanceOf":
+				case "/totalSupply":
 					this.#response.setHeader("Allow", "GET, HEAD, OPTIONS"); break;
 			}
 			endpoint = async () => this.#status = 204;
@@ -55,6 +63,7 @@ class MareBitsAPI extends APIResponse {
 
 			switch (this.#requestUrl.pathname) {
 				case "/balanceOf": endpoint = this.#balanceOf; break;
+				case "/totalSupply": endpoint = this.#totalSupply; break;
 				default: 
 					endpoint = async () => {
 						this.addError(new APIError({ detail: `The \`${this.#requestUrl.pathname}\` endpoint is unsupported.`, title: "Unsupported Method", status: "404" }));
@@ -83,18 +92,15 @@ class MareBitsAPI extends APIResponse {
 		return hash.digest().toString("base64");
 	}
 
-	async #balanceOf() {
+	async #balanceOf(inputAddresses = []) {
 		const addresses = await this.#getAddresses();
 
 		if (addresses.length === 0)
 			return;
 		const dataArrayPromise = { ethereum: [], polygon: [] };
-		const promiseToGetBalance = async (balanceGetter) => {
-			const result = await balanceGetter.call(undefined);
-
-			if ("tokenBalances" in result && result.tokenBalances.length > 0 && "tokenBalance" in result.tokenBalances[0] && result.tokenBalances[0].tokenBalance != null)
-				return this.#web3.ethereum.utils.toBN(result.tokenBalances[0].tokenBalance);
-			return this.#web3.ethereum.utils.toBN("0");
+		const mareBits = {
+			ethereum: new MareBits(this.constructor.#MARE_BITS_CONTRACT_ADDRESS.ETHEREUM, this.#web3.ethereum),
+			polygon: new MareBits(this.constructor.#MARE_BITS_CONTRACT_ADDRESS.POLYGON, this.#web3.polygon)
 		};
 		let j = 0;
 		await addresses.forEach(async (address, i) => {
@@ -103,20 +109,19 @@ class MareBitsAPI extends APIResponse {
 
 			if (j >= this.constructor.#MAX_SIMULTANEOUS_REQUESTS)
 				return this.addError(new APIError({ detail: `Too many simultaneous requests, unable to get balance for address \`${address}\`.`, title: "Too Many Simultaneous Requests" }));
-			dataArrayPromise.ethereum[i] = promiseToGetBalance(this.#web3.ethereum.alchemy.getTokenBalances.bind(undefined, address.id, [this.constructor.#MARE_BITS_CONTRACT_ADDRESS.ETHEREUM]))
-				.catch(this.#errorHandler.bind(this));
-			dataArrayPromise.polygon[i] = promiseToGetBalance(this.#web3.polygon.alchemy.getTokenBalances.bind(undefined, address.id, [this.constructor.#MARE_BITS_CONTRACT_ADDRESS.POLYGON]))
-				.catch(this.#errorHandler.bind(this));
+			dataArrayPromise.ethereum[i] = mareBits.ethereum.balanceOf(address.id);
+			dataArrayPromise.polygon[i] = mareBits.polygon.balanceOf(address.id);
 			j++;
 		});
 		const dataArray = { ethereum: await globalThis.Promise.all(dataArrayPromise.ethereum), polygon: await globalThis.Promise.all(dataArrayPromise.polygon) };
+		const { fromWei, toBN } = this.#web3.ethereum.utils;
 		addresses.forEach((address, i) => {
 			if (typeof(dataArrayPromise.ethereum[i]) !== "undefined")
 				address.addAttribute({
 					balances: {
-						ethereum: this.#web3.ethereum.utils.fromWei(dataArray.ethereum[i]), 
-						polygon: this.#web3.polygon.utils.fromWei(dataArray.polygon[i]), 
-						total: this.#web3.ethereum.utils.fromWei(dataArray.ethereum[i].add(dataArray.polygon[i]))
+						ethereum: fromWei(dataArray.ethereum[i]), 
+						polygon: fromWei(dataArray.polygon[i]), 
+						total: fromWei(toBN(dataArray.ethereum[i]).add(toBN(dataArray.polygon[i])))
 					}
 				});
 			this.addData(address);
@@ -140,6 +145,26 @@ class MareBitsAPI extends APIResponse {
 			this.constructor.#cache.set(this.#cacheKey, { message: this.#message, status: this.#status });
 	}
 	#getAddresses() { return (new Addresses(this.#requestUrl.searchParams.getAll("address"))).normalize(this.#web3.ethereum); }
+	async #totalSupply() {
+		const mareBits = {
+			ethereum: new MareBits(this.constructor.#MARE_BITS_CONTRACT_ADDRESS.ETHEREUM, this.#web3.ethereum),
+			polygon: new MareBits(this.constructor.#MARE_BITS_CONTRACT_ADDRESS.POLYGON, this.#web3.polygon)
+		};
+		const nums = await globalThis.Promise.all([
+			mareBits.ethereum.totalSupply(), 
+			mareBits.ethereum.balanceOf(this.constructor.#MARE_BITS_DEPLOYER_ADDRESS), 
+			mareBits.polygon.balanceOf(this.constructor.#MARE_BITS_DEPLOYER_ADDRESS), 
+			mareBits.ethereum.balanceOf(this.constructor.#MARE_BITS_OWNER_ADDRESS), 
+			mareBits.polygon.balanceOf(this.constructor.#MARE_BITS_OWNER_ADDRESS), 
+			// mareBits.ethereum.balanceOf(this.constructor.#MARE_BITS_VAULT_ADDRESS.ETHEREUM), 
+			mareBits.polygon.balanceOf(this.constructor.#MARE_BITS_VAULT_ADDRESS.POLYGON), 
+			mareBits.ethereum.balanceOf("0x0000000000000000000000000000000000000001")
+		]);
+		const { fromWei, toBN } = this.#web3.ethereum.utils;
+		const response = new APIResource({ id: "ethereum:contract.marebits.eth", attributes: {}, type: "MareBits" });
+		response.attributes.totalSupply = fromWei(nums.slice(1).reduce((result, num) => result.sub(toBN(num)), toBN(nums[0])));
+		this.addData(response);
+	}
 	#writeHead() {
 		if (this.#isHeadWritten)
 			return;
